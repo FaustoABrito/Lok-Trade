@@ -1,0 +1,1093 @@
+
+//+------------------------------------------------------------------+
+//|                          LOKTRADE FLEX EA                        |
+//|                       MyRobot.mq4                                |
+//|                                                                  |
+//| Copyright © 2024, Grupo Telegran                                  |
+//| Contato: +55 71 99918-7219                                       |
+//| Link: http://t.me/Lokman_Trader                                  |
+//|                                                                  |
+//| Descrição:                                                       |
+//| - INSERIR EM COMPRAS APENAS                                       |
+//| - Operar em Conta Profissional                                    |
+//| - SIGA ESSE PADRÃO EA, PARA QUEM NUNCA MAIS, QUER PERDER DINHEIRO!|
+//+------------------------------------------------------------------+
+
+#property copyright   "© Grupo Telegran"
+#property link        "http://t.me/Lokman_Trader"
+#property version     "2024" // Versão inicial do EA
+#property description "EA BRASILEIRO"
+#property description "Operar em Conta Profissional"
+#property description " TimeFrame {M5} Opere 0.01/p 200 usd  GOLD, EURUSD, GBPUSD " 
+#property description "INSERIR EA Apenas em Regiões de Fundo!"
+#property strict      // Habilita verificações estritas de erro no código
+
+//+------------------------------------------------------------------+
+//| Enumeração para as Estratégias                                   |
+//+------------------------------------------------------------------+
+enum StrategyOptions {
+    Original = 0,    // Estratégia Original
+    UptrendOnly      // Região Comprar Imediato Duplo
+};
+
+//+------------------------------------------------------------------+
+//| Parâmetros de entrada                                            |
+//+------------------------------------------------------------------+
+input StrategyOptions strategySelection = Original;           // Seleção das Estratégias (1,2)
+input double TargetProfit = 1.0;                              // Lucro Alvo em USD
+input double LotSizeBuy = 0.02;                               // Tamanho do lote para ordens de compra
+input double LotSizeSell = 0.01;                              // Tamanho do lote para ordens de venda
+input int BuyTakeProfitPoints = 500;                         // Pts Take Profit em ordens de compra
+input int SellTakeProfitPoints = 3000;                        // Pts Take Profit em ordens de venda
+input int MaxBuyOrders = 1;                                   // Máximo de ordens de compra permitidas
+input int MaxSellOrders = 1;                                  // Máximo de ordens de venda permitidas
+input int OrderDistancePoints = 100;                           // Distância Mínima Entre Ordens em Pontos
+input int FundBarsBack = 20;                                  // Nº de Barras para Análise de Fundo
+input int topoBarsBack = 20;                                  // Nº de Barras para Análise de topo
+input int BaseMagicNumber = 2024;                             // Número Mágico Base para identificar ordens específicas
+input datetime ExpiryDate = D'2029.09.20 00:00:00';           // Validade do EA EDITÁVEL
+input double MaxSpread = 30.0;                                // Spread Máximo Permitido em Pontos
+input string labelName = "Manter EA Apenas em Regiões de Fundo!";  // Nome do Rótulo Exibido no Gráfico
+input string labelText = "@Lok_Trade - Programador";          // Texto do rótulo
+input int labelFontSize = 18;                                 // Tamanho da fonte do rótulo
+input color labelColor = Yellow;                              // Cor do rótulo
+input int spaceFromBottom = 50;                               // Espaço do rótulo a partir da parte inferior do gráfico
+
+// Variáveis globais
+double freeMargin = 0.00;              
+string system_objects = "MMEA_";       
+double system_profit = 0.00;           
+double max_drawdown = 0.00;            
+double max_drawup = 0.00;              
+bool valido = true;                    
+int UniqueMagicNumber;                
+string accountName;                    // Nome do usuário
+bool isRealAccount;                    // Tipo de conta (Real ou Demo)
+color blinkColor = clrWhite;           // Cor para efeito de piscamento
+
+//+------------------------------------------------------------------+
+//| Função de inicialização                                          |
+//+------------------------------------------------------------------+
+int OnInit() {
+    // Gera um número mágico único baseado no número do gráfico
+    UniqueMagicNumber = BaseMagicNumber + ChartID();
+    
+    // Inicializa variáveis globais dependentes de funções
+    accountName = AccountInfoString(ACCOUNT_NAME);
+    isRealAccount = (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL);
+
+    // Validação de parâmetros de entrada
+    if (!ValidateLotSizes(LotSizeBuy, LotSizeSell)) {
+        return INIT_FAILED;
+    }
+
+    // Verifica se o EA está dentro do prazo de validade
+    if (!CheckExpiryDate(ExpiryDate)) {
+        return INIT_FAILED;
+    }
+
+    // Configura a interface do gráfico
+    InitializeInterface();
+
+    // Cria o rótulo no gráfico
+    CreateLabelOnChart(labelName, labelText, spaceFromBottom, labelFontSize, labelColor);
+
+    // Verifica as condições iniciais do mercado e abre ordens, se aplicável
+    InitializeOrders();
+
+    return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| Função para validar os tamanhos dos lotes                        |
+//+------------------------------------------------------------------+
+bool ValidateLotSizes(double buySize, double sellSize) {
+    if (buySize <= 0 || sellSize <= 0) {
+        Print("Erro: Tamanho do lote deve ser maior que zero.");
+        return false;
+    }
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Função para verificar a validade do EA                           |
+//+------------------------------------------------------------------+
+bool CheckExpiryDate(datetime expiryDate) {
+    if (TimeCurrent() > expiryDate) {
+        string message = "Este Expert expirou. Entre em contato com @Lok_Trade +55 719 9918-7219 via WhatsApp.";
+        Print(message);
+        Alert(message);
+        return false;
+    }
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Função para criar um rótulo no gráfico                            |
+//+------------------------------------------------------------------+
+void CreateLabelOnChart(string labelName, string labelText, int spaceFromBottom, int labelFontSize, color labelColor) {
+    // Verifica se o rótulo já existe
+    if (ObjectFind(0, labelName) != 0) {
+        // Se já existir, exclui o rótulo antigo para recriá-lo
+        ObjectDelete(0, labelName);
+    }
+    
+    // Cria o rótulo
+    if (ObjectCreate(0, labelName, OBJ_LABEL, 0, 0, 0)) {
+        // Define as propriedades do rótulo
+        ObjectSetInteger(0, labelName, OBJPROP_CORNER, CORNER_LEFT_LOWER); // Posiciona no canto inferior esquerdo
+        ObjectSetInteger(0, labelName, OBJPROP_XDISTANCE, 10); // Distância da borda esquerda
+        ObjectSetInteger(0, labelName, OBJPROP_YDISTANCE, spaceFromBottom); // Distância da borda inferior
+        ObjectSetInteger(0, labelName, OBJPROP_COLOR, labelColor); // Define a cor do texto
+        ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, labelFontSize); // Define o tamanho da fonte
+        ObjectSetString(0, labelName, OBJPROP_TEXT, labelText); // Define o texto a ser exibido
+    } else {
+        Print("Erro ao criar o rótulo: ", labelName);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para inicializar a interface do gráfico                   |
+//+------------------------------------------------------------------+
+void InitializeInterface() {
+    createOrUpdateLabel("labelName", " @Lok_Trade - Programador ", 50, 18, Yellow);
+    AddSymbolNameToChart(); // Adiciona o nome do símbolo no gráfico
+    BuildDeck(clrBlack, clrGray, clrWhite, BORDER_RAISED, ALIGN_CENTER); // Cria o painel de controle
+    CreateLiveSignalsTab(); // Cria a aba de sinais ao vivo
+
+    CustomizeChart(); // Personaliza o gráfico
+}
+
+//+------------------------------------------------------------------+
+//| Função para inicializar as ordens com base nas condições do mercado |
+//+------------------------------------------------------------------+
+void InitializeOrders() {
+    switch (strategySelection) {
+        case Original:
+            // Lógica para a estratégia original
+            if (IsAtFund() && IsSpreadAllowed(MaxSpread)) {
+                OpenBuyOrder(LotSizeBuy);
+                OpenSellOrder(LotSizeSell);
+            }
+            break;
+
+        case UptrendOnly:
+            // Lógica para a estratégia "UptrendOnly" (Apenas Tendência de Alta)
+            if (IsUptrend() && IsSpreadAllowed(MaxSpread)) {
+                OpenBuyOrder(LotSizeBuy);
+            }
+            break;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função de execução a cada tick                                   |
+//+------------------------------------------------------------------+
+void OnTick() {
+    // Verifica se o Expert Advisor ainda está válido
+    if (TimeCurrent() > ExpiryDate) {
+        Print("O robô expirou. +557199918-7219");
+        ExpertRemove(); // Remove o EA se ele tiver expirado
+        return;
+    }
+
+    // Atualiza a hora atual no gráfico
+    UpdateCurrentTimeOnChart();
+
+    // Verifica se o lucro alvo foi alcançado
+    if (AccountProfit() >= TargetProfit) {
+        CloseAllOrders(); // Fecha todas as ordens se o lucro alvo for atingido
+        return;
+    }
+
+    // Atualiza o spread ao vivo, o painel de controle, e os sinais ao vivo
+    UpdateSpreadLabel();
+    UpdateDeck();
+    UpdateLiveSignals();
+    UpdateAdditionalLiveSignals();
+
+    // Atualiza os valores de drawdown/drawup
+    CalculateMaxDrawdownAndDrawup();
+
+    // Seleciona a estratégia de acordo com a escolha do usuário
+    switch (strategySelection) {
+        case Original:
+            // Lógica para a estratégia original
+            if (IsAtFund() && IsSpreadAllowed(MaxSpread)) {
+                ManageOrders();
+            }
+            break;
+
+        case UptrendOnly:
+            // Lógica para a estratégia "UptrendOnly" (Apenas Tendência de Alta)
+            if (IsUptrend() && IsSpreadAllowed(MaxSpread)) {
+                ManageOrders();
+            }
+            break;
+    }
+
+    // Pisca o texto da conta real ou demo
+    BlinkText();
+}
+
+//+------------------------------------------------------------------+
+//| Função para criar ou atualizar a hora atual no gráfico           |
+//+------------------------------------------------------------------+
+void UpdateCurrentTimeOnChart() {
+    string objName = system_objects + "CURRENT_TIME";
+    datetime currentTime = TimeCurrent();  // Obtém a hora atual do servidor
+    string timeText = "H: " + TimeToString(currentTime, TIME_MINUTES | TIME_SECONDS); // Apenas minutos e segundos
+
+    // Verifica se o objeto já existe
+    if (ObjectFind(ChartID(), objName) != -1) {
+        // Atualiza o texto do objeto se já existir
+        ObjectSetString(ChartID(), objName, OBJPROP_TEXT, timeText);
+    } else {
+        // Cria o rótulo se ele não existir
+        if (ObjectCreate(ChartID(), objName, OBJ_LABEL, 0, 0, 0)) {
+            ObjectSetString(ChartID(), objName, OBJPROP_TEXT, timeText);
+            ObjectSetInteger(ChartID(), objName, OBJPROP_CORNER, CORNER_LEFT_UPPER); // Canto superior esquerdo
+            ObjectSetInteger(ChartID(), objName, OBJPROP_XDISTANCE, 99); // Ajuste horizontal a partir da borda esquerda
+            ObjectSetInteger(ChartID(), objName, OBJPROP_YDISTANCE, 380); // Posição abaixo do botão "Fechar Todas as Ordens"
+            ObjectSetInteger(ChartID(), objName, OBJPROP_COLOR, clrYellow); // Cor do texto em amarelo
+            ObjectSetInteger(ChartID(), objName, OBJPROP_FONTSIZE, 12); // Tamanho da fonte
+            ObjectSetInteger(ChartID(), objName, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(ChartID(), objName, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(ChartID(), objName, OBJPROP_ZORDER, 0);
+        } else {
+            Print("Erro ao criar o rótulo de hora atual: ", objName);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para piscar o texto da conta real ou demo                 |
+//+------------------------------------------------------------------+
+void BlinkText() {
+    static bool toggle = true;
+    string objna = system_objects + "ACCOUNT_TYPE";
+    color newColor = toggle ? clrWhite : clrRed;
+    
+    if (ObjectFind(ChartID(), objna) != -1) {
+        ObjectSetInteger(ChartID(), objna, OBJPROP_COLOR, newColor);
+    }
+    
+    toggle = !toggle;
+}
+
+//+------------------------------------------------------------------+
+//| Função para verificar a margem                                   |
+//+------------------------------------------------------------------+
+void CheckMargin() {
+    double freeMargin = AccountFreeMargin();
+    double marginLevel = AccountMargin();
+    double equity = AccountEquity();
+
+    if (freeMargin < 1000) {
+        string alertMessage = "Atenção! Margem baixa. Equity atual: " + DoubleToString(equity, 2) + " USD. Margem livre: " + DoubleToString(freeMargin, 2) + " USD";
+        Print(alertMessage);
+        Alert(alertMessage);
+    }
+
+    if (marginLevel < 500) {
+        string marginAlert = "ALERTA CRÍTICO! Nível de margem abaixo de 100%. Margem livre: " + DoubleToString(freeMargin, 2) + " USD. Nível de margem: " + DoubleToString(marginLevel, 2) + "%";
+        Print(marginAlert);
+        Alert(marginAlert);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para gerenciar as ordens de compra e venda                |
+//+------------------------------------------------------------------+
+void ManageOrders() {
+    int buyOrders = 0;
+    int sellOrders = 0;
+    bool buyTakeProfitReached = false;
+    bool sellTakeProfitReached = false;
+
+    // Conta quantas ordens de compra e venda estão abertas e verifica o Take Profit
+    for (int orderIndex = OrdersTotal() - 1; orderIndex >= 0; orderIndex--) {
+        if (OrderSelect(orderIndex, SELECT_BY_POS)) {
+            if (OrderSymbol() == Symbol() && OrderMagicNumber() == UniqueMagicNumber) {
+                if (OrderType() == OP_BUY && OrderLots() == LotSizeBuy) {
+                    if (IsTakeProfitReached(OrderOpenPrice(), Bid, BuyTakeProfitPoints)) {
+                        buyTakeProfitReached = true;
+                    }
+                    buyOrders++;
+                } else if (OrderType() == OP_SELL && OrderLots() == LotSizeSell) {
+                    if (IsTakeProfitReached(OrderOpenPrice(), Ask, SellTakeProfitPoints)) {
+                        sellTakeProfitReached = true;
+                    }
+                    sellOrders++;
+                }
+            }
+        }
+    }
+
+    // Fecha todas as ordens se o Take Profit da ordem de compra ou venda for atingido
+    if (buyTakeProfitReached || sellTakeProfitReached) {
+        CloseAllOrders();
+    } else {
+        // Abre novas ordens conforme necessário
+        if (buyOrders < MaxBuyOrders && CanOpenOrder(OP_BUY, LotSizeBuy)) {
+            OpenBuyOrder(LotSizeBuy);
+        }
+        if (sellOrders < MaxSellOrders && CanOpenOrder(OP_SELL, LotSizeSell)) {
+            OpenSellOrder(LotSizeSell);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para verificar se o Take Profit foi atingido              |
+//+------------------------------------------------------------------+
+bool IsTakeProfitReached(double openPrice, double currentPrice, int takeProfitPoints) {
+    return (currentPrice >= openPrice + takeProfitPoints * Point);
+}
+
+//+------------------------------------------------------------------+
+//| Função para verificar se estamos em um fundo                     |
+//+------------------------------------------------------------------+
+bool IsAtFund() {
+    // Verifica se o número de barras disponíveis é suficiente
+    if (Bars < FundBarsBack + 1) {
+        Print("Erro: Não há barras suficientes para verificar o fundo.");
+        return false;
+    }
+
+    // Inicializa a variável com um valor alto para garantir a precisão
+    double minPrice = Low[0];
+
+    // Percorre as barras passadas para encontrar o preço mínimo
+    for (int i = 1; i <= FundBarsBack; i++) {
+        if (Low[i] < minPrice) {
+            minPrice = Low[i];
+        }
+    }
+
+    // Verifica se o preço atual (Bid) está no fundo identificado
+    bool isAtFund = (Bid <= minPrice);
+
+    // Log opcional para monitorar o processo de verificação
+    Print("Verificação de fundo: minPrice = ", minPrice, ", Bid = ", Bid, ", isAtFund = ", isAtFund);
+
+    return isAtFund;
+}
+
+//+------------------------------------------------------------------+
+//| Função para verificar se estamos em um topo                      |
+//+------------------------------------------------------------------+
+bool IsAtTopo() {
+    // Verifica se o número de barras disponíveis é suficiente
+    if (Bars < topoBarsBack + 1) {
+        Print("Erro: Não há barras suficientes para verificar o topo.");
+        return false;
+    }
+
+    // Inicializa a variável com um valor baixo para garantir a precisão
+    double maxPrice = High[0];
+
+    // Percorre as barras passadas para encontrar o preço máximo
+    for (int i = 1; i <= topoBarsBack; i++) {
+        if (High[i] > maxPrice) {
+            maxPrice = High[i];
+        }
+    }
+
+    // Verifica se o preço atual (Bid) está no topo identificado
+    bool isAtTopo = (Bid >= maxPrice);
+
+    // Log opcional para monitorar o processo de verificação
+    Print("Verificação de topo: maxPrice = ", maxPrice, ", Bid = ", Bid, ", isAtTopo = ", isAtTopo);
+
+    return isAtTopo;
+}
+
+//+------------------------------------------------------------------+
+//| Função para verificar se o mercado está em tendência de alta     |
+//+------------------------------------------------------------------+
+bool IsUptrend() {
+    // Define os parâmetros da média móvel
+    int shortPeriod = 5;
+    int longPeriod = 20;
+    int maMethod = MODE_SMA;
+    int appliedPrice = PRICE_CLOSE;
+
+    // Calcula as médias móveis de curto e longo prazo
+    double maShort = iMA(Symbol(), PERIOD_M15, shortPeriod, 0, maMethod, appliedPrice, 0);
+    double maLong = iMA(Symbol(), PERIOD_M15, longPeriod, 0, maMethod, appliedPrice, 0);
+
+    // Verifica se estamos em tendência de alta
+    return (maShort > maLong);
+}
+
+//+------------------------------------------------------------------+
+//| Função para verificar se podemos abrir uma nova ordem            |
+//+------------------------------------------------------------------+
+bool CanOpenOrder(int orderType, double lotSize) {
+    // Verifica se o tamanho do lote é válido
+    if (lotSize <= 0) {
+        Print("Erro: Tamanho do lote inválido (", lotSize, "). A ordem não pode ser aberta.");
+        return false;
+    }
+
+    // Verifica se o spread atual está dentro do limite permitido
+    if (!IsSpreadAllowed(MaxSpread)) {
+        Print("Spread atual excede o máximo permitido. A ordem não pode ser aberta.");
+        return false;
+    }
+
+    double lastOrderPrice = 0;
+    bool canOpen = true;
+
+    // Verifica as ordens existentes para decidir se uma nova ordem pode ser aberta
+    for (int orderIndex = OrdersTotal() - 1; orderIndex >= 0; orderIndex--) {
+        if (OrderSelect(orderIndex, SELECT_BY_POS)) {
+            if (OrderSymbol() == Symbol() && OrderMagicNumber() == UniqueMagicNumber) {
+                if (orderType == OP_BUY && OrderType() == OP_BUY) {
+                    lastOrderPrice = OrderOpenPrice();
+                    if ((Bid - lastOrderPrice < OrderDistancePoints * Point)) {
+                        canOpen = false;
+                        Print("Não é possível abrir nova ordem de compra. Distância mínima não atendida.");
+                        break;
+                    }
+                } else if (orderType == OP_SELL && OrderType() == OP_SELL) {
+                    lastOrderPrice = OrderOpenPrice();
+                    if ((lastOrderPrice - Ask < OrderDistancePoints * Point)) {
+                        canOpen = false;
+                        Print("Não é possível abrir nova ordem de venda. Distância mínima não atendida.");
+                        break;
+                    }
+                }
+            }
+        } else {
+            Print("Erro ao selecionar ordem na posição ", orderIndex, ": ", GetLastError());
+            ResetLastError();
+        }
+    }
+
+    return canOpen;
+}
+
+//+------------------------------------------------------------------+
+//| Função auxiliar para abrir uma ordem                             |
+//+------------------------------------------------------------------+
+void OpenOrder(int orderType, double lotSize, double price, color arrowColor, string orderComment, double takeProfit = 0) {
+    if (lotSize <= 0) {
+        Print("Erro: Tamanho do lote inválido (", lotSize, "). A ordem não pode ser aberta.");
+        Alert("Erro: Tamanho do lote inválido. A ordem não pode ser aberta.");
+        return;
+    }
+
+    int ticket = OrderSend(Symbol(), orderType, lotSize, price, 3, 0, takeProfit, orderComment, UniqueMagicNumber, 0, arrowColor);
+
+    if (ticket < 0) {
+        int error_code = GetLastError();
+        string error_description = ErrorDescription(error_code);
+        Print("Erro ao abrir ordem (", (orderType == OP_BUY ? "BUY" : "SELL"), "): Código ", error_code, " - ", error_description);
+        Alert("Erro ao abrir ordem (", (orderType == OP_BUY ? "BUY" : "SELL"), "): ", error_description);
+        ResetLastError();
+    } else {
+        Print("Ordem aberta com sucesso. Ticket: ", ticket, ", Tipo: ", (orderType == OP_BUY ? "BUY" : "SELL"), ", Lote: ", lotSize, ", Preço: ", price);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para abrir uma ordem de compra                            |
+//+------------------------------------------------------------------+
+void OpenBuyOrder(double lotSize) {
+    double tp = Ask + BuyTakeProfitPoints * Point; // Calcula o Take Profit para compra
+    OpenOrder(OP_BUY, lotSize, Ask, Blue, "EA Brasileiro Buy", tp);
+}
+
+//+------------------------------------------------------------------+
+//| Função para abrir uma ordem de venda                             |
+//+------------------------------------------------------------------+
+void OpenSellOrder(double lotSize) {
+    double tp = Bid - SellTakeProfitPoints * Point; // Calcula o Take Profit para venda
+    OpenOrder(OP_SELL, lotSize, Bid, Red, "EA Brasileiro Sell", tp);
+}
+
+//+------------------------------------------------------------------+
+//| Função para fechar todas as ordens                               |
+//+------------------------------------------------------------------+
+void CloseAllOrders() {
+    int totalOrders = OrdersTotal();
+    bool closeResult;
+
+    for (int orderIndex = totalOrders - 1; orderIndex >= 0; orderIndex--) {
+        if (OrderSelect(orderIndex, SELECT_BY_POS)) {
+            // Verifica se a ordem é do símbolo atual e tem o Magic Number desejado
+            if (OrderSymbol() == Symbol() && OrderMagicNumber() == UniqueMagicNumber) {
+                double closePrice;
+                color arrowColor;
+
+                if (OrderType() == OP_BUY) {
+                    closePrice = Bid;
+                    arrowColor = Blue;
+                } else if (OrderType() == OP_SELL) {
+                    closePrice = Ask;
+                    arrowColor = Red;
+                } else {
+                    continue; // Ignora ordens de outros tipos (como pendentes)
+                }
+
+                // Tenta fechar a ordem
+                closeResult = OrderClose(OrderTicket(), OrderLots(), closePrice, 3, arrowColor);
+                
+                if (!closeResult) {
+                    int errorCode = GetLastError();
+                    Print("Erro ao fechar ordem #", OrderTicket(), " (", (OrderType() == OP_BUY ? "BUY" : "SELL"), "): ", ErrorDescription(errorCode));
+                    ResetLastError();
+                } else {
+                    Print("Ordem #", OrderTicket(), " (", (OrderType() == OP_BUY ? "BUY" : "SELL"), ") fechada com sucesso.");
+                }
+            }
+        } else {
+            Print("Erro ao selecionar ordem na posição ", orderIndex, ": ", GetLastError());
+            ResetLastError();
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para descrever o erro                                     |
+//+------------------------------------------------------------------+
+string ErrorDescription(int errorCode) {
+    switch (errorCode) {
+        case ERR_NO_ERROR: return "Nenhum erro.";
+        case ERR_INVALID_TRADE_VOLUME: return "Volume de negociação inválido.";
+        case ERR_MARKET_CLOSED: return "Mercado fechado.";
+        case ERR_NO_RESULT: return "Nenhum resultado.";
+        case ERR_SERVER_BUSY: return "Servidor ocupado.";
+        case ERR_TRADE_TIMEOUT: return "Tempo limite de negociação.";
+        case ERR_INVALID_PRICE: return "Preço inválido.";
+        default: return "Erro desconhecido. Código: " + IntegerToString(errorCode);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para verificar se o spread atual é menor que o spread máximo permitido |
+//+------------------------------------------------------------------+
+bool IsSpreadAllowed(double maxSpread) {
+    double spread = MarketInfo(Symbol(), MODE_SPREAD);
+    double normalizedSpread = spread * Point;
+
+    if (normalizedSpread > maxSpread) {
+        Print("Spread atual ", normalizedSpread, " excede o máximo permitido ", maxSpread);
+        Alert("Spread atual excede o máximo permitido: " + DoubleToString(normalizedSpread, 2) + " pontos.");
+        return false;
+    }
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Função para atualizar o rótulo do spread                         |
+//+------------------------------------------------------------------+
+void UpdateSpreadLabel() {
+    // Calcula o spread em pontos
+    double spread = MarketInfo(Symbol(), MODE_SPREAD);
+    spread = NormalizeDouble(spread, 2);
+    
+    // Define o nome do objeto para o rótulo do spread
+    string objName = system_objects + "SPREAD";
+    
+    // Gera o texto atualizado para o rótulo
+    string newText = "Spread: " + DoubleToString(spread, 2) + " pontos";
+    
+    // Atualiza o texto do rótulo apenas se ele tiver mudado
+    if (ObjectFind(ChartID(), objName) != -1) { // Verifica se o objeto existe
+        string currentText = ObjectGetString(ChartID(), objName, OBJPROP_TEXT);
+        if (currentText != newText) {
+            ObjectSetString(ChartID(), objName, OBJPROP_TEXT, newText);
+        }
+    } else {
+        // Se o objeto não existe, cria um novo rótulo
+        ObjectCreate(ChartID(), objName, OBJ_LABEL, 0, 0, 0);
+        ObjectSetString(ChartID(), objName, OBJPROP_TEXT, newText);
+        ObjectSetInteger(ChartID(), objName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+        ObjectSetInteger(ChartID(), objName, OBJPROP_XDISTANCE, 10);
+        ObjectSetInteger(ChartID(), objName, OBJPROP_YDISTANCE, 10);
+        ObjectSetInteger(ChartID(), objName, OBJPROP_COLOR, clrWhite);
+        ObjectSetInteger(ChartID(), objName, OBJPROP_FONTSIZE, 12);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para calcular a máxima redução (drawdown) e máximo aumento (drawup) |
+//+------------------------------------------------------------------+
+void CalculateMaxDrawdownAndDrawup() {
+    static double highestBalance = AccountBalance();
+    static double lowestEquity = AccountEquity();
+
+    double equity = AccountEquity();
+    double balance = AccountBalance();
+
+    // Atualiza o maior saldo (highestBalance) alcançado
+    if (balance > highestBalance) {
+        highestBalance = balance;
+    }
+
+    // Atualiza o menor equity (lowestEquity) alcançado
+    if (equity < lowestEquity) {
+        lowestEquity = equity;
+    }
+
+    // Calcula o drawdown como a diferença entre o maior saldo e o menor equity observado
+    double currentDrawdown = highestBalance - equity;
+    if (currentDrawdown > max_drawdown) {
+        max_drawdown = currentDrawdown;
+    }
+
+    // Calcula o drawup como a diferença entre o menor saldo observado e o maior equity atual
+    double currentDrawup = equity - lowestEquity;
+    if (currentDrawup > max_drawup) {
+        max_drawup = currentDrawup;
+    }
+
+    // Logs opcionais para monitoramento
+    Print("Máxima Redução (Drawdown) atualizada: ", max_drawdown);
+    Print("Máximo Aumento (Drawup) atualizado: ", max_drawup);
+}
+
+//+------------------------------------------------------------------+
+//| Função para criar ou atualizar um rótulo na interface do MetaTrader |
+//+------------------------------------------------------------------+
+void createOrUpdateLabel(string labelName, string labelText, int spaceFromBottom, int labelFontSize, color labelColor) {
+       // Verifica se o objeto já existe
+    if (ObjectFind(0, labelName) != 0) {
+        if (!ObjectDelete(0, labelName)) {
+            Print("Erro ao deletar o objeto existente: ", labelName);
+            return;
+        }
+    }
+
+    // Cria o objeto de rótulo se ele não existir ou foi deletado
+    if (ObjectCreate(0, labelName, OBJ_LABEL, 0, 0, 0)) {
+        SetLabelProperties(labelName, labelText, spaceFromBottom, labelFontSize, labelColor);
+    } else {
+        Print("Erro ao criar o rótulo: ", labelName);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para definir as propriedades do rótulo                    |
+//+------------------------------------------------------------------+
+void SetLabelProperties(string labelName, string labelText, int spaceFromBottom, int labelFontSize, color labelColor) {
+    ObjectSetInteger(0, labelName, OBJPROP_CORNER, CORNER_LEFT_LOWER);
+    ObjectSetInteger(0, labelName, OBJPROP_XDISTANCE, 10);
+    ObjectSetInteger(0, labelName, OBJPROP_YDISTANCE, spaceFromBottom);
+    ObjectSetInteger(0, labelName, OBJPROP_COLOR, labelColor);
+    ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, labelFontSize);
+    ObjectSetInteger(0, labelName, OBJPROP_SELECTABLE, false);
+    ObjectSetInteger(0, labelName, OBJPROP_SELECTED, false);
+    ObjectSetString(0, labelName, OBJPROP_TEXT, labelText);
+}
+
+//+------------------------------------------------------------------+
+//| Função para adicionar o nome do símbolo no gráfico               |
+//+------------------------------------------------------------------+
+void AddSymbolNameToChart() {
+    string symbolName = Symbol();
+    string objectName = "SymbolNameText";
+
+    // Verifica se o objeto já existe
+    if (ObjectFind(0, objectName) < 0) {
+        // Cria o objeto de texto no gráfico
+        if (!CreateTextObject(objectName, symbolName)) {
+            Print("Erro ao criar o objeto de texto: ", objectName);
+        }
+    } else {
+        // Atualiza o texto do objeto existente, se necessário
+        if (!UpdateTextObject(objectName, symbolName)) {
+            Print("Erro ao atualizar o texto do objeto: ", objectName);
+        } else {
+            Print("Texto do objeto atualizado: ", symbolName);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para criar um objeto de texto no gráfico                  |
+//+------------------------------------------------------------------+
+bool CreateTextObject(string objectName, string text) {
+    if (ObjectCreate(0, objectName, OBJ_TEXT, 0, 0, 0)) {
+        // Define as propriedades do objeto de texto
+        SetObjectProperties(objectName, text);
+        return true;
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Função para atualizar o texto de um objeto existente no gráfico  |
+//+------------------------------------------------------------------+
+bool UpdateTextObject(string objectName, string text) {
+    if (ObjectSetString(0, objectName, OBJPROP_TEXT, text)) {
+        return true;
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Função para definir as propriedades do objeto de texto           |
+//+------------------------------------------------------------------+
+void SetObjectProperties(string objectName, string text, int corner = CORNER_RIGHT_UPPER, int xDistance = 20, int yDistance = 20, color textColor = clrWhite, int fontSize = 70, bool selectable = false, bool selected = false) {
+    // Define a posição do objeto no gráfico
+    ObjectSetInteger(0, objectName, OBJPROP_CORNER, corner);
+    ObjectSetInteger(0, objectName, OBJPROP_XDISTANCE, xDistance);
+    ObjectSetInteger(0, objectName, OBJPROP_YDISTANCE, yDistance);
+    
+    // Define as propriedades visuais do texto
+    ObjectSetInteger(0, objectName, OBJPROP_COLOR, textColor);
+    ObjectSetInteger(0, objectName, OBJPROP_FONTSIZE, fontSize);
+    
+    // Define se o objeto é selecionável e se está selecionado
+    ObjectSetInteger(0, objectName, OBJPROP_SELECTABLE, selectable);
+    ObjectSetInteger(0, objectName, OBJPROP_SELECTED, selected);
+    
+    // Define o texto a ser exibido
+    ObjectSetString(0, objectName, OBJPROP_TEXT, text);
+}
+
+//+------------------------------------------------------------------+
+//| Função para criar a aba de Sinais ao Vivo                        |
+//+------------------------------------------------------------------+
+void CreateLiveSignalsTab() {
+    int px = 10; // posição x inicial
+    int py = 235; // posição y inicial
+    int sx = 300; // largura do botão
+    int sy = 17; // altura do botão
+    int fs = 9; // tamanho da fonte
+    color back_col = clrBlack;
+    color brd_col = clrGray;
+    color txt_col = clrWhite;
+    string font = "Arial";
+
+    // Array de rótulos de sinal e seus IDs correspondentes
+    struct SignalItem {
+        string label;
+        string id;
+    };
+
+    SignalItem signals[] = {
+        {"SINAIS AO VIVO:", "LIVE_SIGNALS"},
+        {"M1: --", "SIGNAL_M1"},
+        {"M5: --", "SIGNAL_M5"},
+        {"M15: --", "SIGNAL_M30"},
+        {"H1: --", "SIGNAL_H1"},
+        {"D1: --", "SIGNAL_D1"},
+        {"W1: --", "SIGNAL_W1"},
+    };
+
+    // Loop para criar botões de sinal
+    for (int i = 0; i < ArraySize(signals); i++) {
+        string objna = system_objects + signals[i].id;
+        HS_Create_Btn(ChartID(), 0, objna, sx, sy, px, py, font, fs, back_col, brd_col, BORDER_FLAT, txt_col, ALIGN_LEFT, signals[i].label, false, false);
+        py += sy; // Move a posição y para o próximo botão
+    }
+
+    // Adicionando botão para fechar todas as ordens
+    string closeOrdersButton = system_objects + "CLOSE_ALL_ORDERS";
+    HS_Create_Btn(ChartID(), 0, closeOrdersButton, sx, sy, px, py, font, fs, clrGreen, brd_col, BORDER_FLAT, txt_col, ALIGN_CENTER, "FECHAR TODAS AS ORDENS", true, true);
+}
+
+//+------------------------------------------------------------------+
+//| Função OnChartEvent                                              |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam) {
+    // Processa eventos de clique em objetos
+    if (id == CHARTEVENT_OBJECT_CLICK) {
+        HandleObjectClick(sparam);
+    }
+    // Adicione aqui outros tipos de eventos, se necessário
+}
+
+//+------------------------------------------------------------------+
+//| Função para processar cliques em objetos                         |
+//+------------------------------------------------------------------+
+void HandleObjectClick(const string &sparam) {
+    if (sparam == system_objects + "CLOSE_ALL_ORDERS") {
+        CloseAllOrders();
+    } else if (sparam == system_objects + "ANOTHER_BUTTON") {
+        Print("Botão 'ANOTHER_BUTTON' clicado.");
+    } else {
+        Print("Objeto desconhecido clicado: ", sparam);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para atualizar os sinais ao vivo                          |
+//+------------------------------------------------------------------+
+void UpdateLiveSignals() {
+    // Definindo os períodos de tempo a serem atualizados
+    int timeFrames[] = {PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_H1};
+    string timeFrameLabels[] = {"M1", "M5", "M15", "H1"};
+
+    // Verifica se os arrays têm o mesmo tamanho
+    if (ArraySize(timeFrames) != ArraySize(timeFrameLabels)) {
+        Print("Erro: Arrays timeFrames e timeFrameLabels têm tamanhos diferentes.");
+        return;
+    }
+
+    // Loop para atualizar os sinais para cada período de tempo
+    for (int i = 0; i < ArraySize(timeFrames); i++) {
+        string signal = GetSignal(timeFrames[i]);
+        string objna = system_objects + "SIGNAL_" + timeFrameLabels[i];
+
+        // Verifica se o objeto existe antes de atualizá-lo
+        if (ObjectFind(ChartID(), objna) != -1) {
+            color txtColor = (signal == "Venda") ? clrRed : clrWhite; // Sinal de baixa em vermelho
+            ObjectSetInteger(ChartID(), objna, OBJPROP_COLOR, txtColor);
+            ObjectSetString(ChartID(), objna, OBJPROP_TEXT, timeFrameLabels[i] + ": " + signal);
+        } else {
+            Print("Objeto não encontrado: ", objna);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para atualizar sinais ao vivo adicionais                  |
+//+------------------------------------------------------------------+
+void UpdateAdditionalLiveSignals() {
+    // Definindo os períodos de tempo a serem atualizados
+    int additionalTimeFrames[] = {PERIOD_M30, PERIOD_H1, PERIOD_D1, PERIOD_W1};
+    string additionalTimeFrameLabels[] = {"M30", "H1_2", "D1", "W1"};
+
+    // Verifica se os arrays têm o mesmo tamanho
+    if (ArraySize(additionalTimeFrames) != ArraySize(additionalTimeFrameLabels)) {
+        Print("Erro: Arrays additionalTimeFrames e additionalTimeFrameLabels têm tamanhos diferentes.");
+        return;
+    }
+
+    // Loop para atualizar os sinais para cada período de tempo adicional
+    for (int i = 0; i < ArraySize(additionalTimeFrames); i++) {
+        string signal = GetSignal(additionalTimeFrames[i]);
+        string objna = system_objects + "SIGNAL_" + additionalTimeFrameLabels[i];
+
+        // Verifica se o objeto existe antes de atualizá-lo
+        if (ObjectFind(ChartID(), objna) != -1) {
+            color txtColor = (signal == "Venda") ? clrRed : clrWhite; // Sinal de baixa em vermelho
+            ObjectSetInteger(ChartID(), objna, OBJPROP_COLOR, txtColor);
+            ObjectSetString(ChartID(), objna, OBJPROP_TEXT, additionalTimeFrameLabels[i] + ": " + signal);
+        } else {
+            Print("Objeto não encontrado: ", objna);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para obter o sinal baseado em um time frame               |
+//+------------------------------------------------------------------+
+string GetSignal(int timeFrame, int shortPeriod = 5, int longPeriod = 20, int maMethod = MODE_SMA, int appliedPrice = PRICE_CLOSE) {
+    // Verifica se os parâmetros são válidos
+    if (shortPeriod <= 0 || longPeriod <= 0 || shortPeriod >= longPeriod) {
+        Print("Parâmetros inválidos: shortPeriod = ", shortPeriod, ", longPeriod = ", longPeriod);
+        return "Erro";
+    }
+
+    // Calcula as médias móveis
+    double maShort = iMA(Symbol(), timeFrame, shortPeriod, 0, maMethod, appliedPrice, 0);
+    double maLong = iMA(Symbol(), timeFrame, longPeriod, 0, maMethod, appliedPrice, 0);
+
+    // Verifica se as médias móveis foram calculadas corretamente
+    if (maShort == 0 || maLong == 0) {
+        Print("Erro ao calcular as médias móveis: maShort = ", maShort, ", maLong = ", maLong);
+        return "Erro";
+    }
+
+    // Determina o sinal com base nas médias móveis
+    if (maShort > maLong) {
+        return "Compra";
+    } else if (maShort < maLong) {
+        return "Venda";
+    } else {
+        return "Neutro";
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para construir e atualizar a interface do painel          |
+//+------------------------------------------------------------------+
+void BuildDeck(color back_col, color brd_col, color txt_col, ENUM_BORDER_TYPE brd_type, ENUM_ALIGN_MODE align) {
+    int px = 10; // posição x
+    int py = 30; // posição y
+    int sx = 200; // largura
+    int sy = 17; // tamanho da linha
+    int fs = 9; // tamanho da fonte
+    
+    // Array com os nomes dos objetos
+    string names[] = {
+        "EA BRASILEIRO",
+        "TRADES_NO",
+        "EQUITY",
+        "MAX_DD",
+        "MAX_DU",
+        "SPREAD",
+        "ACCOUNT_NAME",    // Nome do usuário
+        "ACCOUNT_TYPE"     // Tipo de conta (Real/Demo)
+    };
+
+    // Array com os textos iniciais dos objetos
+    string texts[] = {
+        "EA BRASILEIRO: ", 
+        "Ordens: ", 
+        "SALDO: --", 
+        "Máx. Redução: --", 
+        "Máx. Aumento: --", 
+        "Spread: --", 
+        "",  // Placeholder para o nome do usuário
+        ""   // Placeholder para o tipo de conta
+    };
+
+    // Loop para criar ou atualizar cada item do painel
+    for(int i = 0; i < ArraySize(names); i++) {
+        string full_name = system_objects + names[i];
+        string display_text = texts[i];
+
+        // Adiciona os valores dinâmicos onde necessário
+        if (i == 0) { // MAGIC number
+            display_text += IntegerToString(UniqueMagicNumber);
+        } else if (i == 1) { // Número de ordens
+            display_text += IntegerToString(OrdersTotal());
+        } else if (i == 6) { // Nome do usuário
+            display_text = "Usuário: " + accountName;
+        } else if (i == 7) { // Tipo de conta
+            display_text = "CONTA: " + (isRealAccount ? "REAL" : "DEMO");
+        }
+
+        CreateOrUpdateButton(full_name, display_text, px, py, sx, sy, fs, back_col, brd_col, brd_type, txt_col, align);
+        py += sy; // Ajusta a posição y para o próximo item
+    }
+    
+    // Atualiza o painel com dados dinâmicos
+    UpdateDeck();
+}
+
+//+------------------------------------------------------------------+
+//| Função para criar ou atualizar um botão na interface             |
+//+------------------------------------------------------------------+
+void CreateOrUpdateButton(string name, string text, int px, int py, int sx, int sy, int fs, color back_col, color brd_col, ENUM_BORDER_TYPE brd_type, color txt_col, ENUM_ALIGN_MODE align) {
+    if (ObjectFind(ChartID(), name) != -1) {
+        // Se o objeto já existe, atualiza o texto
+        ObjectSetString(ChartID(), name, OBJPROP_TEXT, text);
+    } else {
+        // Caso contrário, cria um novo botão
+        if (ObjectCreate(ChartID(), name, OBJ_BUTTON, 0, 0, 0)) {
+            ObjectSetInteger(ChartID(), name, OBJPROP_XSIZE, sx);
+            ObjectSetInteger(ChartID(), name, OBJPROP_YSIZE, sy);
+            ObjectSetInteger(ChartID(), name, OBJPROP_XDISTANCE, px);
+            ObjectSetInteger(ChartID(), name, OBJPROP_YDISTANCE, py);
+            ObjectSetInteger(ChartID(), name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+            ObjectSetInteger(ChartID(), name, OBJPROP_COLOR, txt_col);
+            ObjectSetInteger(ChartID(), name, OBJPROP_FONTSIZE, fs);
+            ObjectSetInteger(ChartID(), name, OBJPROP_BORDER_TYPE, brd_type);
+            ObjectSetInteger(ChartID(), name, OBJPROP_BACK, true);
+            ObjectSetInteger(ChartID(), name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(ChartID(), name, OBJPROP_BORDER_COLOR, brd_col);
+            ObjectSetInteger(ChartID(), name, OBJPROP_BGCOLOR, back_col);
+            ObjectSetString(ChartID(), name, OBJPROP_TEXT, text);
+        } else {
+            Print("Erro ao criar botão: ", name);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função para atualizar a interface do painel                      |
+//+------------------------------------------------------------------+
+void UpdateDeck() {
+    // Define o prefixo dos objetos
+    string objna;
+
+    // Atualiza o rótulo do EA (LOKTRADE FLEX)
+    objna = system_objects + "EA BRASILEIRO";
+    if(ObjectFind(ChartID(), objna) != -1) {
+        ObjectSetString(ChartID(), objna, OBJPROP_TEXT, "EA BRASILEIRO: " + IntegerToString(UniqueMagicNumber));
+    } else {
+        Print("Objeto não encontrado: ", objna);
+    }
+
+    // Atualiza o número de ordens abertas
+    objna = system_objects + "TRADES_NO";
+    if(ObjectFind(ChartID(), objna) != -1) {
+        ObjectSetString(ChartID(), objna, OBJPROP_TEXT, "Ordens: " + IntegerToString(OrdersTotal()));
+    } else {
+        Print("Objeto não encontrado: ", objna);
+    }
+
+    // Atualiza o saldo atual (equity)
+    objna = system_objects + "EQUITY";
+    if(ObjectFind(ChartID(), objna) != -1) {
+        ObjectSetString(ChartID(), objna, OBJPROP_TEXT, "SALDO: " + DoubleToString(AccountEquity(), 2) + "$");
+    } else {
+        Print("Objeto não encontrado: ", objna);
+    }
+
+    // Atualiza a máxima redução (drawdown)
+    objna = system_objects + "MAX_DD";
+    if(ObjectFind(ChartID(), objna) != -1) {
+        ObjectSetString(ChartID(), objna, OBJPROP_TEXT, "Máx. Redução: " + DoubleToString(max_drawdown, 2) + "$");
+    } else {
+        Print("Objeto não encontrado: ", objna);
+    }
+
+    // Atualiza o máximo aumento (drawup)
+    objna = system_objects + "MAX_DU";
+    if(ObjectFind(ChartID(), objna) != -1) {
+        ObjectSetString(ChartID(), objna, OBJPROP_TEXT, "Máx. Aumento: " + DoubleToString(max_drawup, 2) + "$");
+    } else {
+        Print("Objeto não encontrado: ", objna);
+    }
+
+    // Atualiza os rótulos do spread e sinais ao vivo
+    UpdateSpreadLabel();
+    UpdateLiveSignals();
+    UpdateAdditionalLiveSignals();
+}
+//+------------------------------------------------------------------+
+//| Função para personalizar o gráfico                               |
+//+------------------------------------------------------------------+
+void CustomizeChart() {
+    ChartSetInteger(0, CHART_COLOR_BACKGROUND, clrBlack); // Cor do fundo
+    ChartSetInteger(0, CHART_COLOR_FOREGROUND, clrWhite); // Cor do primeiro plano
+    ChartSetInteger(0, CHART_COLOR_GRID, clrBlack); // Cor da grade
+
+    // Definindo a cor das velas através de propriedades do gráfico
+    ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, clrGreen); // Cor do corpo do candle de alta
+    ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, clrRed);   // Cor do corpo do candle de baixa (inclui bordas e pavios)
+}
+
+//+------------------------------------------------------------------+
+//| Função para criar botão                                          |
+//+------------------------------------------------------------------+
+void HS_Create_Btn(long cid, int subw, string name, int sx, int sy, int px, int py, string font, int fontsize, color bck_col, color brd_col, ENUM_BORDER_TYPE brd_type, color txt_col, ENUM_ALIGN_MODE align, string text, bool selectable, bool back) {
+    if(ObjectFind(cid, name) != -1) {
+        ObjectDelete(cid, name);
+    }
+    
+    if (ObjectCreate(cid, name, OBJ_BUTTON, subw, 0, 0)) {
+        ObjectSetString(cid, name, OBJPROP_FONT, font);
+        ObjectSetInteger(cid, name, OBJPROP_ALIGN, align);
+        ObjectSetInteger(cid, name, OBJPROP_FONTSIZE, fontsize);
+        ObjectSetInteger(cid, name, OBJPROP_XSIZE, sx);
+        ObjectSetInteger(cid, name, OBJPROP_YSIZE, sy);
+        ObjectSetInteger(cid, name, OBJPROP_XDISTANCE, px);
+        ObjectSetInteger(cid, name, OBJPROP_YDISTANCE, py);
+        ObjectSetInteger(cid, name, OBJPROP_BGCOLOR, bck_col);
+        ObjectSetInteger(cid, name, OBJPROP_BORDER_COLOR, brd_col);
+        ObjectSetInteger(cid, name, OBJPROP_COLOR, txt_col);
+        ObjectSetInteger(cid, name, OBJPROP_BORDER_TYPE, brd_type);
+        ObjectSetInteger(cid, name, OBJPROP_SELECTABLE, selectable);
+        ObjectSetInteger(cid, name, OBJPROP_BACK, back);
+        ObjectSetString(cid, name, OBJPROP_TEXT, text);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Função principal                                                  |
+//+------------------------------------------------------------------+
+int start() {
+    OnTick(); // Chama a função de execução a cada tick
+    return 0;
+}
